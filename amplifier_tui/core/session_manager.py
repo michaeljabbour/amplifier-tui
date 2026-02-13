@@ -149,15 +149,31 @@ class SessionManager:
 
     @staticmethod
     def _expand_env_vars(value: Any) -> Any:
-        """Recursively expand ``${VAR}`` references in config values."""
+        """Recursively expand ``${VAR}`` references in config values.
+
+        When a value consists *entirely* of a single ``${VAR}`` reference and
+        that variable is **not set**, the key is dropped (returns ``None``)
+        so that downstream libraries fall back to their built-in defaults
+        (e.g. the Anthropic SDK's default ``base_url``).
+
+        Inline references like ``https://host/${PATH}/v1`` still substitute
+        the empty string for unset variables, matching standard shell behaviour.
+        """
         if isinstance(value, str):
+            # Whole-value reference to a single env var — drop if unset
+            m = re.fullmatch(r"\$\{(\w+)\}", value)
+            if m:
+                return os.environ.get(m.group(1)) or None
+            # Inline references — substitute empty string for unset vars
             return re.sub(
                 r"\$\{(\w+)\}",
                 lambda m: os.environ.get(m.group(1), ""),
                 value,
             )
         if isinstance(value, dict):
-            return {k: SessionManager._expand_env_vars(v) for k, v in value.items()}
+            expanded = {k: SessionManager._expand_env_vars(v) for k, v in value.items()}
+            # Strip keys whose values resolved to None (unset env vars)
+            return {k: v for k, v in expanded.items() if v is not None}
         if isinstance(value, list):
             return [SessionManager._expand_env_vars(v) for v in value]
         return value
