@@ -148,6 +148,36 @@ class SessionManager:
             return {}
 
     @staticmethod
+    def _load_keys_env() -> None:
+        """Load ``~/.amplifier/keys.env`` into the process environment.
+
+        The Amplifier CLI stores API keys collected during ``amplifier init``
+        in this file.  Each line is ``KEY=VALUE`` (shell-style).  Lines
+        starting with ``#`` and blank lines are skipped.  Existing
+        environment variables are **not** overwritten so that explicit
+        shell exports always win.
+        """
+        keys_path = Path("~/.amplifier/keys.env").expanduser()
+        if not keys_path.exists():
+            return
+        try:
+            for line in keys_path.read_text().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                key, _, val = line.partition("=")
+                key = key.strip()
+                val = val.strip()
+                # Strip surrounding quotes (shell-style KEY="value" or KEY='value')
+                if len(val) >= 2 and val[0] == val[-1] and val[0] in ("'", '"'):
+                    val = val[1:-1]
+                if key and val and key not in os.environ:
+                    os.environ[key] = val
+            logger.debug("Loaded keys from %s", keys_path)
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to load keys.env", exc_info=True)
+
+    @staticmethod
     def _expand_env_vars(value: Any) -> Any:
         """Recursively expand ``${VAR}`` references in config values.
 
@@ -245,6 +275,69 @@ class SessionManager:
             self._bridge = LocalBridge()
         return self._bridge
 
+    @staticmethod
+    def _register_session_spawning(session: AmplifierSession) -> None:
+        """Register ``session.spawn`` and ``session.resume`` capabilities.
+
+        Without these, the ``task`` / ``delegate`` tool cannot spawn child
+        agent sessions.  The CLI registers these at the app layer; we
+        replicate that here.
+        """
+        try:
+            from amplifier_foundation import load_bundle, BundleRegistry  # noqa: PLC0415
+
+            async def _spawn(
+                config: dict[str, Any],
+                parent_id: str | None = None,
+            ) -> Any:
+                """Spawn a child session for agent delegation."""
+                bundle_name = config.get("bundle") or "foundation"
+                registry = BundleRegistry()
+                bundle = await load_bundle(bundle_name, registry=registry)
+                prepared = await bundle.prepare()
+
+                # Merge parent providers into child if child has none
+                parent_providers = session.coordinator.get("providers") or {}
+                if parent_providers and not prepared.mount_plan.get("providers"):
+                    # Convert live provider instances to mount-plan entries
+                    prepared.mount_plan.setdefault("providers", {}).update(
+                        parent_providers
+                    )
+
+                from amplifier_distro.bridge_protocols import (  # noqa: PLC0415
+                    BridgeApprovalSystem,
+                    BridgeDisplaySystem,
+                )
+
+                child = await prepared.create_session(
+                    approval_system=BridgeApprovalSystem(auto_approve=True),
+                    display_system=BridgeDisplaySystem(),
+                    session_cwd=session.coordinator.session_cwd or Path.cwd(),
+                    parent_id=parent_id,
+                )
+                return child
+
+            async def _resume(session_id: str, **kwargs: Any) -> Any:
+                """Resume an existing session (for multi-turn agents)."""
+                # Delegate to the bridge's resume logic
+                from amplifier_distro.bridge import LocalBridge  # noqa: PLC0415
+
+                bridge = LocalBridge()
+                from amplifier_distro.bridge import BridgeConfig  # noqa: PLC0415
+
+                config = BridgeConfig(
+                    working_dir=session.coordinator.session_cwd or Path.cwd(),
+                    run_preflight=False,
+                )
+                handle = await bridge.resume_session(session_id, config)
+                return handle._session
+
+            session.coordinator.register_capability("session.spawn", _spawn)
+            session.coordinator.register_capability("session.resume", _resume)
+            logger.debug("Registered session.spawn and session.resume capabilities")
+        except Exception:  # noqa: BLE001
+            logger.debug("Failed to register session spawning", exc_info=True)
+
     def _on_stream(self, event: str, data: dict[str, Any]) -> None:
         """Dispatch bridge streaming events to the TUI callbacks."""
         if event == "content_block:start":
@@ -332,6 +425,8 @@ class SessionManager:
             If non-empty, override the provider's default model after
             session creation.
         """
+        self._load_keys_env()
+
         from amplifier_distro.bridge import BridgeConfig  # noqa: PLC0415
 
         if cwd is None:
@@ -352,6 +447,7 @@ class SessionManager:
 
         # Mount providers from settings.yaml if the bundle didn't include any
         await self._mount_providers_from_settings()
+        self._register_session_spawning(self.session)
 
         if model_override:
             self.switch_model(model_override)
@@ -378,6 +474,8 @@ class SessionManager:
             the sidebar the caller should pass the original project path
             so the session CWD matches.  Falls back to ``Path.cwd()``.
         """
+        self._load_keys_env()
+
         from amplifier_distro.bridge import BridgeConfig  # noqa: PLC0415
 
         bridge = self._get_bridge()
@@ -395,6 +493,7 @@ class SessionManager:
 
         # Mount providers from settings.yaml if the bundle didn't include any
         await self._mount_providers_from_settings()
+        self._register_session_spawning(self.session)
 
         if model_override:
             self.switch_model(model_override)
