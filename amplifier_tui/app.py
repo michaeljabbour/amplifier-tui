@@ -6406,8 +6406,8 @@ class AmplifierTuiApp(
 
         parts: list[str] = []
 
-        # Project directory
-        project_dir = os.getcwd()
+        # Project directory — prefer the user's workspace setting over process CWD
+        project_dir = self._prefs.environment.workspace or os.getcwd()
         home = str(Path.home())
         if project_dir.startswith(home):
             project_dir = "~" + project_dir[len(home) :]
@@ -6693,7 +6693,13 @@ class AmplifierTuiApp(
                 self.call_from_thread(self._update_status, "Starting session...")
                 model = self._prefs.preferred_model or ""
                 try:
+                    # Use workspace preference as session CWD so tools
+                    # (read_file, glob, delegate, etc.) scope to the
+                    # user's chosen directory, not the process launch dir.
+                    ws = self._prefs.environment.workspace
+                    session_cwd = Path(ws) if ws else None
                     await self.session_manager.start_new_session(
+                        cwd=session_cwd,
                         model_override=model,
                     )
                 except Exception as session_err:
