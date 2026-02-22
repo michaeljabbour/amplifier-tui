@@ -3191,13 +3191,46 @@ class AmplifierTuiApp(
             except OSError:
                 pass
             preview = self._copy_preview(text)
-            self._add_system_message(
-                f"Copied ({len(text)} chars)\nPreview: {preview}"
-            )
+            self._add_system_message(f"Copied ({len(text)} chars)\nPreview: {preview}")
         else:
             self._add_system_message(
                 "Failed to copy — no clipboard tool available (install xclip or xsel)"
             )
+
+    # ── Auto-copy on mouse selection ────────────────────────────
+
+    _copy_debounce_timer: Timer | None = None
+
+    def on_mouse_up(self) -> None:
+        """Auto-copy selected text on mouse-up (like claudechic)."""
+        # Debounce: Textual needs a moment to finalize the selection
+        if self._copy_debounce_timer is not None:
+            self._copy_debounce_timer.stop()
+        self._copy_debounce_timer = self.set_timer(0.05, self._auto_copy_selection)
+
+    def _auto_copy_selection(self) -> None:
+        """Copy the current text selection to clipboard silently."""
+        self._copy_debounce_timer = None
+        try:
+            selected = self.screen.text_selection
+            if not selected:
+                return
+            text = str(selected)
+            if len(text.strip()) < 2:
+                return
+            # Platform clipboard
+            _copy_to_clipboard(text)
+            # OSC 52 for terminal support
+            try:
+                self.copy_to_clipboard(text)
+            except Exception:
+                pass
+            try:
+                self._clipboard_store.add(text, source="selection")
+            except OSError:
+                pass
+        except (AttributeError, Exception):
+            pass
 
     # ── Input Handling ──────────────────────────────────────────
 
@@ -5667,7 +5700,9 @@ class AmplifierTuiApp(
         c = self._prefs.colors
         widget.styles.color = c.assistant_text
 
-    def _style_thinking(self, container: Collapsible | QuietCollapsible, inner: Static) -> None:
+    def _style_thinking(
+        self, container: Collapsible | QuietCollapsible, inner: Static
+    ) -> None:
         """Apply preference colors to a thinking block.
 
         Border and background are handled by CSS.  Only inner text
@@ -5676,7 +5711,9 @@ class AmplifierTuiApp(
         c = self._prefs.colors
         inner.styles.color = c.thinking_text
 
-    def _style_tool(self, container: Collapsible | QuietCollapsible, inner: Static) -> None:
+    def _style_tool(
+        self, container: Collapsible | QuietCollapsible, inner: Static
+    ) -> None:
         """Apply preference colors to a tool use block.
 
         Border is handled by CSS (``$panel``).  Only inner text color
@@ -5822,7 +5859,7 @@ class AmplifierTuiApp(
         collapsible = QuietCollapsible(
             inner,
             title=f"Thinking: {preview}",
-            collapsed=False,
+            collapsed=True,
             classes="thinking-block",
         )
         chat_view.mount(collapsible)
@@ -5896,7 +5933,7 @@ class AmplifierTuiApp(
                 collapsible = QuietCollapsible(
                     inner,
                     title=title,
-                    collapsed=False,
+                    collapsed=True,
                 )
                 collapsible.add_class("tool-use")
                 chat_view.mount(collapsible)
@@ -5925,7 +5962,7 @@ class AmplifierTuiApp(
         collapsible = QuietCollapsible(
             inner,
             title=title,
-            collapsed=False,
+            collapsed=True,
         )
         collapsible.add_class("tool-use")
         chat_view.mount(collapsible)
@@ -6048,6 +6085,7 @@ class AmplifierTuiApp(
                 existing.last().update(f"  {phase_msg}")
             else:
                 from textual.widgets import Static
+
                 progress_widget = Static(
                     f"  {phase_msg}",
                     classes="startup-progress system-message",
@@ -6638,7 +6676,7 @@ class AmplifierTuiApp(
             container = QuietCollapsible(
                 inner,
                 title="Thinking\u2026",
-                collapsed=False,
+                collapsed=True,
                 classes="thinking-block",
             )
             chat_view.mount(container)
@@ -6711,8 +6749,7 @@ class AmplifierTuiApp(
                 if len(text) > 55:
                     preview += "\u2026"
                 self._stream_container.title = f"\u25b6 Thinking: {preview}"
-                # Keep expanded -- user can collapse manually
-                pass
+                self._stream_container.collapsed = True
         else:
             self._last_assistant_text = text
             old = self._stream_widget
@@ -6764,8 +6801,8 @@ class AmplifierTuiApp(
                     "Starting session...",
                 )
                 # Wire progress callback so user sees each phase
-                self.session_manager.on_progress = (
-                    lambda msg: self.call_from_thread(self._update_startup_progress, msg)
+                self.session_manager.on_progress = lambda msg: self.call_from_thread(
+                    self._update_startup_progress, msg
                 )
                 model = self._prefs.preferred_model or ""
                 try:
