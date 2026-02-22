@@ -16,7 +16,7 @@ dependencies = [
     "amplifier-foundation @ git+https://github.com/microsoft/amplifier-foundation",
     "pyyaml>=6.0",
     "pyte>=0.8.2",
-    "textual>=0.47.0",
+    "textual>=8.0.0",
 ]
 
 [project.optional-dependencies]

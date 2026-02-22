@@ -28,6 +28,8 @@ from textual.widgets import (
     TextArea,
     Tree,
 )
+
+from .widgets.quiet_collapsible import QuietCollapsible
 from textual import work
 from textual.css.query import NoMatches
 from textual.timer import Timer
@@ -82,6 +84,7 @@ from .widgets import (
     TabState,
     TodoPanel,
     UserMessage,
+    StatusFooter,
 )
 
 from .core.app_base import SharedAppBase
@@ -172,6 +175,7 @@ class AmplifierTuiApp(
 
     CSS_PATH = "styles.tcss"
     TITLE = "Amplifier TUI"
+    ALLOW_SELECT = True
 
     MAX_STASHES = 5
     SESSION_NAMES_FILE = _amp_home / "tui-session-names.json"
@@ -568,19 +572,7 @@ class AmplifierTuiApp(
                 yield HistorySearchBar()
                 yield Static("", id="attachment-indicator")
                 yield Static("", id="input-counter")
-                with Horizontal(id="status-bar"):
-                    yield Static("No session", id="status-session")
-                    yield Static("", id="status-tabs")
-                    yield Static("Ready", id="status-state")
-                    yield Static("", id="status-stash")
-                    yield Static("", id="status-vim")
-                    yield Static("", id="status-ml")
-                    yield Static("", id="status-system")
-                    yield Static("", id="status-mode")
-                    yield Static("\u2195 ON", id="status-scroll")
-                    yield Static("0 words", id="status-wordcount")
-                    yield Static("", id="status-context")
-                    yield Static("", id="status-model")
+                yield StatusFooter(id="status-bar")
             yield TodoPanel(id="todo-panel")
             yield AgentTreePanel(id="agent-tree-panel")
 
@@ -3156,9 +3148,24 @@ class AmplifierTuiApp(
             logger.debug("Stash indicator widget not found", exc_info=True)
 
     def action_copy_response(self) -> None:
-        """Copy the last assistant response to the system clipboard."""
-        # Try _last_assistant_text first; fall back to _search_messages
-        text = self._last_assistant_text
+        """Copy text to the system clipboard.
+
+        Priority:
+        1. Natively selected text (Textual 8.0+ drag-select)
+        2. Last assistant response
+        """
+        # 1. Prefer natively selected text (Textual 8.0+)
+        text = ""
+        try:
+            selected = self.screen.text_selection
+            if selected:
+                text = selected
+        except (AttributeError, Exception):
+            pass
+
+        # 2. Fall back to last assistant response
+        if not text:
+            text = self._last_assistant_text
         if not text:
             for role, msg_text, _widget in reversed(self._search_messages):
                 if role == "assistant":
@@ -3167,14 +3174,25 @@ class AmplifierTuiApp(
         if not text:
             self._add_system_message("No assistant messages to copy")
             return
-        if _copy_to_clipboard(text):
+
+        # Copy via platform tool (pbcopy / xclip / etc.)
+        copied = _copy_to_clipboard(text)
+
+        # Also push via Textual's OSC 52 for terminals that support it
+        try:
+            self.copy_to_clipboard(text)
+            copied = True
+        except Exception:
+            pass
+
+        if copied:
             try:
                 self._clipboard_store.add(text, source="copy response")
             except OSError:
                 pass
             preview = self._copy_preview(text)
             self._add_system_message(
-                f"Copied last assistant message ({len(text)} chars)\nPreview: {preview}"
+                f"Copied ({len(text)} chars)\nPreview: {preview}"
             )
         else:
             self._add_system_message(
@@ -4203,18 +4221,24 @@ class AmplifierTuiApp(
 
     def _cmd_environment(self) -> None:
         """Show full environment diagnostics and re-arm if now ready."""
+        self._cmd_environment_worker()
+
+    @work(thread=True)
+    def _cmd_environment_worker(self) -> None:
+        """Run environment check in a worker thread (avoids event-loop conflict)."""
         from .environment import check_environment, format_status
 
         status = check_environment(self._prefs.environment.workspace)
-        self._add_system_message(format_status(status))
+        self.call_from_thread(self._add_system_message, format_status(status))
 
         # If the environment is now ready but we previously marked it
         # unavailable, re-arm so the next message will try to create a session.
         if status.ready and not self._amplifier_ready:
             self._amplifier_available = True
             self._amplifier_ready = True
-            self._add_system_message(
-                "Environment looks good now. Send a message to start a session."
+            self.call_from_thread(
+                self._add_system_message,
+                "Environment looks good now. Send a message to start a session.",
             )
 
     def _cmd_auto(self, args: str) -> None:
@@ -5626,30 +5650,40 @@ class AmplifierTuiApp(
         return None
 
     def _style_user(self, widget: Static) -> None:
-        """Apply preference colors to a user message."""
+        """Apply preference colors to a user message.
+
+        Border is now handled by CSS (``$primary``).  Only text color
+        is set from preferences for custom-theme compatibility.
+        """
         c = self._prefs.colors
         widget.styles.color = c.user_text
-        widget.styles.border_left = ("thick", c.user_border)
 
     def _style_assistant(self, widget: Markdown) -> None:
-        """Apply preference colors to an assistant message."""
+        """Apply preference colors to an assistant message.
+
+        Border is now handled by CSS (``$secondary``).  Only text color
+        is set from preferences for custom-theme compatibility.
+        """
         c = self._prefs.colors
         widget.styles.color = c.assistant_text
-        widget.styles.border_left = ("wide", c.assistant_border)
 
-    def _style_thinking(self, container: Collapsible, inner: Static) -> None:
-        """Apply preference colors to a thinking block."""
+    def _style_thinking(self, container: Collapsible | QuietCollapsible, inner: Static) -> None:
+        """Apply preference colors to a thinking block.
+
+        Border and background are handled by CSS.  Only inner text
+        color is set from preferences.
+        """
         c = self._prefs.colors
         inner.styles.color = c.thinking_text
-        container.styles.border_left = ("wide", c.thinking_border)
-        container.styles.background = c.thinking_background
 
-    def _style_tool(self, container: Collapsible, inner: Static) -> None:
-        """Apply preference colors to a tool use block."""
+    def _style_tool(self, container: Collapsible | QuietCollapsible, inner: Static) -> None:
+        """Apply preference colors to a tool use block.
+
+        Border is handled by CSS (``$panel``).  Only inner text color
+        is set from preferences.
+        """
         c = self._prefs.colors
         inner.styles.color = c.tool_text
-        container.styles.border_left = ("wide", c.tool_border)
-        container.styles.background = c.tool_background
 
     @staticmethod
     def _tool_title(tool_name: str, tool_input: dict | str | None, result: str) -> str:
@@ -5702,13 +5736,14 @@ class AmplifierTuiApp(
         """Apply preference colors to a system message."""
         c = self._prefs.colors
         widget.styles.color = c.system_text
-        widget.styles.border_left = ("thick", c.system_border)
 
     def _style_error(self, widget: Static) -> None:
-        """Apply preference colors to an error message."""
+        """Apply preference colors to an error message.
+
+        Border is now handled by CSS (``$error``).
+        """
         c = self._prefs.colors
         widget.styles.color = c.error_text
-        widget.styles.border_left = ("wide", c.error_border)
 
     def _maybe_add_fold_toggle(self, widget: Static, content: str) -> None:
         """Add a fold toggle after a long message for expand/collapse."""
@@ -5784,10 +5819,10 @@ class AmplifierTuiApp(
             preview += "..."
         full_text = text[:800] + "..." if len(text) > 800 else text
         inner = Static(full_text, classes="thinking-text")
-        collapsible = Collapsible(
+        collapsible = QuietCollapsible(
             inner,
-            title=f"\u25b6 Thinking: {preview}",
-            collapsed=True,
+            title=f"Thinking: {preview}",
+            collapsed=False,
             classes="thinking-block",
         )
         chat_view.mount(collapsible)
@@ -5858,10 +5893,10 @@ class AmplifierTuiApp(
             if rendered is not None:
                 title, diff_text = rendered
                 inner = Static(diff_text, markup=True, classes="tool-detail tool-diff")
-                collapsible = Collapsible(
+                collapsible = QuietCollapsible(
                     inner,
                     title=title,
-                    collapsed=True,
+                    collapsed=False,
                 )
                 collapsible.add_class("tool-use")
                 chat_view.mount(collapsible)
@@ -5887,10 +5922,10 @@ class AmplifierTuiApp(
 
         title = self._tool_title(tool_name, tool_input, result)
         inner = Static(detail, classes="tool-detail")
-        collapsible = Collapsible(
+        collapsible = QuietCollapsible(
             inner,
             title=title,
-            collapsed=True,
+            collapsed=False,
         )
         collapsible.add_class("tool-use")
         chat_view.mount(collapsible)
@@ -5988,6 +6023,38 @@ class AmplifierTuiApp(
         minutes = int(elapsed) // 60
         seconds = int(elapsed) % 60
         return f"{minutes}m {seconds:02d}s"
+
+    def _update_startup_progress(self, phase_msg: str) -> None:
+        """Update the chat area with a session startup phase message.
+
+        Called from the session_manager's on_progress callback to show
+        each phase of session creation transparently (bundle loading,
+        provider init, etc.) instead of an opaque 'Starting session...'
+        """
+        self._update_status(phase_msg)
+        # Also update the processing indicator if it exists
+        try:
+            indicator = self.query_one("#processing-indicator", ProcessingIndicator)
+            frame = self._SPINNER[self._spinner_frame % len(self._SPINNER)]
+            indicator.update(f" {frame} {phase_msg}")
+        except NoMatches:
+            pass
+        # Append a subtle system note so the user sees the progress in the chat
+        try:
+            chat_view = self._active_chat_view()
+            # Find existing startup-progress widget and update in-place
+            existing = chat_view.query(".startup-progress")
+            if existing:
+                existing.last().update(f"  {phase_msg}")
+            else:
+                from textual.widgets import Static
+                progress_widget = Static(
+                    f"  {phase_msg}",
+                    classes="startup-progress system-message",
+                )
+                chat_view.mount(progress_widget)
+        except Exception:
+            pass
 
     def _start_processing(self, label: str = "Thinking") -> None:
         self.is_processing = True
@@ -6568,9 +6635,9 @@ class AmplifierTuiApp(
 
         if block_type in ("thinking", "reasoning"):
             inner = Static("\u258d", classes="thinking-text")
-            container = Collapsible(
+            container = QuietCollapsible(
                 inner,
-                title="\u25b6 Thinking\u2026",
+                title="Thinking\u2026",
                 collapsed=False,
                 classes="thinking-block",
             )
@@ -6585,7 +6652,7 @@ class AmplifierTuiApp(
             chat_view.mount(widget)
             c = self._prefs.colors
             widget.styles.color = c.assistant_text
-            widget.styles.border_left = ("wide", c.assistant_border)
+            # Border handled by CSS (.assistant-message { border-left: wide $secondary })
             self._scroll_if_auto(widget)
             self._stream_widget = widget
             self._stream_container = None
@@ -6644,7 +6711,8 @@ class AmplifierTuiApp(
                 if len(text) > 55:
                     preview += "\u2026"
                 self._stream_container.title = f"\u25b6 Thinking: {preview}"
-                self._stream_container.collapsed = True
+                # Keep expanded -- user can collapse manually
+                pass
         else:
             self._last_assistant_text = text
             old = self._stream_widget
@@ -6690,7 +6758,15 @@ class AmplifierTuiApp(
         try:
             # Auto-create session on first message
             if not self.session_manager.session:
-                self.call_from_thread(self._update_status, "Starting session...")
+                self.call_from_thread(self._clear_welcome)
+                self.call_from_thread(
+                    self._add_system_message,
+                    "Starting session...",
+                )
+                # Wire progress callback so user sees each phase
+                self.session_manager.on_progress = (
+                    lambda msg: self.call_from_thread(self._update_startup_progress, msg)
+                )
                 model = self._prefs.preferred_model or ""
                 try:
                     await self.session_manager.start_new_session(
@@ -6894,9 +6970,9 @@ class AmplifierTuiApp(
                         else block.content
                     )
                     inner = Static(full_text, classes="thinking-text")
-                    collapsible = Collapsible(
+                    collapsible = QuietCollapsible(
                         inner,
-                        title=f"\u25b6 Thinking: {preview}",
+                        title=f"Thinking: {preview}",
                         collapsed=True,
                         classes="thinking-block",
                     )

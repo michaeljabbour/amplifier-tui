@@ -1,15 +1,14 @@
 /* Amplifier TUI Styles
  *
- * Layout, spacing, and text-style rules live here.
- * Colors (text, borders, backgrounds) for chat messages are applied
- * from user preferences (~/.amplifier/tui-preferences.yaml) via Python
- * inline styles, which override any CSS defaults.
- *
  * Visual hierarchy (most prominent -> least):
- * 1. User messages:     ORANGE bar, WHITE text, bold, most spacing
- * 2. Assistant messages: BLUE bar, GREEN text, normal spacing
- * 3. Thinking blocks:   PURPLE bar, DIM GRAY text, italic, collapsed
- * 4. Tool calls:        GRAY bar, DIMMEST text, compact, collapsed
+ * 1. User messages:     thick $primary border, bold, most spacing
+ * 2. Assistant messages: wide $secondary border, normal spacing
+ * 3. Thinking blocks:   wide purple border, dim text, italic, expanded
+ * 4. Tool calls:        wide $panel border, dimmest text, expanded
+ *
+ * CSS-first approach: theme variables provide defaults for borders and
+ * colors.  Python inline styles are used ONLY for custom theme overrides
+ * (non-default color themes set via preferences).
  */
 
 Screen {
@@ -276,6 +275,12 @@ Screen {
     margin: 0;
 }
 
+/* =====================================================
+ * CSS-FIRST MESSAGE STYLING
+ * Theme variables provide sensible defaults; Python
+ * inline styles override only for custom themes.
+ * ===================================================== */
+
 /* -- Base message ------------------------------------- */
 
 .chat-message {
@@ -284,20 +289,20 @@ Screen {
     padding: 0 2 0 2;
 }
 
-/* -- User messages: ORANGE, bold, prominent ----------- */
+/* -- User messages: thick $primary border, bold ------- */
 
 .user-message {
-    /* border-left and color set by preferences in Python */
-    margin: 2 0 1 0;
+    border-left: thick $primary;
+    margin: 2 0 2 0;
     padding: 0 2;
     text-style: bold;
 }
 
-/* -- Assistant messages: BLUE, clean markdown --------- */
+/* -- Assistant messages: wide $secondary border ------- */
 
 .assistant-message {
-    /* border-left and color set by preferences in Python */
-    margin: 0 0 1 0;
+    border-left: wide $secondary;
+    margin: 1 0 1 0;
     padding: 0 2;
 }
 
@@ -374,6 +379,16 @@ Screen {
     max-height: 6;
 }
 
+/* -- Startup progress (phased session init feedback) -- */
+
+.startup-progress {
+    color: #888888;
+    text-style: italic;
+    padding: 0 2;
+    margin: 0;
+    height: 1;
+}
+
 /* -- Message folding (toggled by /fold command) ------- */
 
 .chat-message.folded {
@@ -403,7 +418,8 @@ Screen {
  */
 
 .thinking-block {
-    /* border-left and background set by preferences in Python */
+    border-left: wide #665588;
+    background: #110e18;
     margin: 0 0 0 4;
     padding: 0;
 }
@@ -420,8 +436,13 @@ Screen {
     background: #1a1525;
 }
 
+/* Breathing room when expanded */
+.thinking-block QuietCollapsible.-expanded CollapsibleTitle {
+    padding: 1 0;
+}
+
 .thinking-block .thinking-text {
-    /* color set by preferences in Python */
+    color: #666677;
     text-style: italic;
     padding: 0 2;
     margin: 0;
@@ -429,29 +450,39 @@ Screen {
 
 /* Thinking blocks from transcript replay (Static, not Collapsible) */
 .thinking-static {
-    /* border-left, background, color set by preferences in Python */
+    border-left: wide #665588;
+    background: #110e18;
+    color: #666677;
     margin: 0 0 0 4;
     padding: 0 2;
     text-style: italic;
 }
 
-/* -- Tool use blocks: GRAY, compact, mechanical ------- */
+/* -- Tool use blocks: $panel border, compact ---------- */
 
 .tool-use {
-    /* border-left and background set by preferences in Python */
+    border-left: wide $panel;
     margin: 0 0 0 2;
     padding: 0;
 }
 
+.tool-use:hover {
+    border-left: wide $panel-lighten-2;
+}
+
 .tool-use CollapsibleTitle {
-    color: #888888;
+    color: $text-muted;
     padding: 0 0 0 1;
     background: transparent;
 }
 
 .tool-use CollapsibleTitle:hover {
-    color: #aaaaaa;
-    background: #151515;
+    background: $surface;
+}
+
+/* Breathing room when expanded */
+.tool-use QuietCollapsible.-expanded CollapsibleTitle {
+    padding: 1 0;
 }
 
 .tool-header {
@@ -462,14 +493,43 @@ Screen {
 }
 
 .tool-detail {
-    /* color set by preferences in Python */
+    color: #555555;
     padding: 0 2;
+    margin: 0;
+    overflow-x: auto;
+}
+
+/* -- Error state for failed tools --------------------- */
+
+.tool-use.error {
+    background: $error 10%;
+}
+
+.tool-use.error.-collapsed {
+    background: $error 25%;
+}
+
+/* -- BaseToolWidget styling (click-anywhere toggle) --- */
+
+BaseToolWidget {
+    border-left: wide $panel;
     margin: 0;
 }
 
-/* -- Collapsible global overrides --------------------- */
+BaseToolWidget:hover {
+    border-left: wide $panel-lighten-2;
+}
+
+/* -- Collapsible / QuietCollapsible global overrides --- */
 
 Collapsible {
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    border: none;
+}
+
+QuietCollapsible {
     padding: 0;
     margin: 0;
     background: transparent;
@@ -485,6 +545,21 @@ CollapsibleTitle {
 CollapsibleTitle:hover {
     color: $text;
     background: $surface;
+}
+
+/* -- Transparent backgrounds for content blocks ------- */
+
+.chat-message,
+.tool-use,
+.thinking-block,
+.processing-indicator,
+.error-message {
+    background: transparent;
+}
+
+/* Override the transparent default for thinking (needs tinted bg) */
+.thinking-block {
+    background: #110e18;
 }
 
 /* -- Processing indicator ----------------------------- */
@@ -580,7 +655,55 @@ CollapsibleTitle:hover {
     padding: 0 1;
 }
 
-/* -- Status bar --------------------------------------- */
+/* -- Error display ------------------------------------ */
+
+.error-message {
+    border-left: thick $error;
+    margin: 1 0;
+    padding: 0 2;
+}
+
+/* =====================================================
+ * STATUS FOOTER (reactive composite widget)
+ * ===================================================== */
+
+StatusFooter {
+    dock: bottom;
+    height: 1;
+    background: $surface;
+}
+
+#footer-content {
+    height: 1;
+}
+
+.footer-label {
+    color: $text-muted;
+    padding: 0 1;
+    width: auto;
+}
+
+.footer-sep {
+    color: $panel;
+    width: auto;
+}
+
+#footer-spacer {
+    width: 1fr;
+}
+
+/* Context bar (token usage indicator) */
+ContextBar {
+    width: auto;
+    padding: 0 1;
+    content-align: right middle;
+}
+
+ContextBar:hover {
+    background: $panel;
+}
+
+/* -- Status bar (legacy — kept for backward compat) --- */
 
 #status-bar {
     dock: bottom;
@@ -603,8 +726,8 @@ CollapsibleTitle:hover {
 }
 
 #status-state {
-    width: 1fr;
-    margin: 0 2;
+    width: auto;
+    margin: 0 1;
 }
 
 #status-wordcount {
@@ -619,17 +742,23 @@ CollapsibleTitle:hover {
     margin: 0 1;
 }
 
+#status-stash,
+#status-vim,
+#status-ml,
+#status-mode,
+#status-scroll {
+    width: auto;
+    color: $text-muted;
+}
+
 #status-model {
     width: auto;
     color: $text-muted;
 }
 
-/* -- Error display ------------------------------------ */
-
-.error-message {
-    /* border-left and color set by preferences in Python */
-    margin: 1 0;
-    padding: 0 2;
+#branch-label {
+    width: auto;
+    color: $text-muted;
 }
 
 /* -- Markdown (inside assistant messages) ------------- */
@@ -842,6 +971,10 @@ HistorySearchScreen {
     display: none;
 }
 
+.focus-mode StatusFooter {
+    display: none;
+}
+
 .focus-mode #breadcrumb-bar {
     display: none;
 }
@@ -977,4 +1110,30 @@ FindBar {
 
 .focus-mode FindBar {
     display: none;
+}
+
+/* =====================================================
+ * TEXT SELECTION (Textual 8.0+ native selection)
+ * Users can click-drag to select text in any widget,
+ * then Ctrl+C / Cmd+C to copy.  The ALLOW_SELECT=True
+ * default in Textual 8.0 enables selection everywhere.
+ * The screen--selection component style controls the
+ * highlight color.
+ * ===================================================== */
+
+/* Override the default selection highlight (blue tint) */
+Screen .screen--selection {
+    background: $primary 60%;
+    color: white;
+}
+
+/* =====================================================
+ * INFINITE SCROLL
+ * Chat containers have no line or height limits.
+ * Content grows unbounded; the ScrollableContainer
+ * handles virtualization.
+ * ===================================================== */
+
+.tab-chat-view {
+    overflow-y: auto;
 }

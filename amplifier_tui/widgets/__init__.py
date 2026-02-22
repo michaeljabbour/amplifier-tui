@@ -19,7 +19,10 @@ from .messages import (
     UserMessage,
 )
 from .panels import PinnedPanel, PinnedPanelHeader, PinnedPanelItem
+from .quiet_collapsible import QuietCollapsible
+from .status_footer import ContextBar, StatusFooter
 from .todo_panel import TodoPanel
+from .tool_base import BaseToolWidget
 from .agent_tree_panel import AgentTreePanel
 from .screens import HistorySearchScreen, ShortcutOverlay
 from .tabs import TabBar, TabButton
@@ -28,7 +31,9 @@ __all__ = [
     "AmplifierCommandProvider",
     "AssistantMessage",
     "Attachment",
+    "BaseToolWidget",
     "ChatInput",
+    "ContextBar",
     "ErrorMessage",
     "FindBar",
     "FoldToggle",
@@ -41,7 +46,9 @@ __all__ = [
     "PinnedPanelHeader",
     "PinnedPanelItem",
     "ProcessingIndicator",
+    "QuietCollapsible",
     "ShortcutOverlay",
+    "StatusFooter",
     "SuggestionBar",
     "SystemMessage",
     "TabBar",

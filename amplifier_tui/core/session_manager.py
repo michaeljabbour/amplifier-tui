@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 from .log import logger
 from .platform_info import (
+    amplifier_home,
     amplifier_projects_dir,
     reconstruct_project_path,
 )
@@ -42,6 +43,9 @@ class SessionManager:
         self.on_tool_post: Callable[[str, dict, str], None] | None = None
         self.on_execution_start: Callable[[], None] | None = None
         self.on_execution_end: Callable[[], None] | None = None
+
+        # Progress callback for startup phases (set by the app)
+        self.on_progress: Callable[[str], None] | None = None
 
         # Token usage tracking
         self.on_usage_update: Callable[[], None] | None = None
@@ -134,6 +138,31 @@ class SessionManager:
             self._bridge = LocalBridge()
         return self._bridge
 
+    @staticmethod
+    def _read_active_bundle() -> str | None:
+        """Read the active bundle name from settings.yaml.
+
+        The distro Bridge reads its own ``distro.yaml``, but the TUI's
+        environment follows the CLI convention of ``settings.yaml``.
+        We bridge the gap by reading settings.yaml and passing the
+        bundle name explicitly via ``BridgeConfig.bundle_name``.
+        """
+        settings_path = amplifier_home() / "settings.yaml"
+        if not settings_path.exists():
+            return None
+        try:
+            import yaml
+
+            data = yaml.safe_load(settings_path.read_text()) or {}
+            bundle_cfg = data.get("bundle", {})
+            if isinstance(bundle_cfg, dict):
+                return str(bundle_cfg.get("active") or "") or None
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "Failed to read active bundle from settings.yaml", exc_info=True
+            )
+        return None
+
     def _on_stream(self, event: str, data: dict[str, Any]) -> None:
         """Dispatch bridge streaming events to the TUI callbacks."""
         if event == "content_block:start":
@@ -207,28 +236,47 @@ class SessionManager:
             If non-empty, override the provider's default model after
             session creation.
         """
+        if self.on_progress:
+            self.on_progress("Importing Amplifier runtime...")
         from amplifier_distro.bridge import BridgeConfig
 
         if cwd is None:
             cwd = Path.cwd()
 
+        if self.on_progress:
+            self.on_progress("Connecting to bridge...")
         bridge = self._get_bridge()
+
+        bundle_name = self._read_active_bundle()
+        if self.on_progress:
+            self.on_progress(
+                f"Loading bundle '{bundle_name}'..."
+                if bundle_name
+                else "Loading default bundle..."
+            )
         config = BridgeConfig(
             working_dir=cwd,
+            bundle_name=bundle_name,
             run_preflight=False,
             on_stream=self._on_stream,
         )
 
+        if self.on_progress:
+            self.on_progress("Creating session (loading providers, tools, hooks)...")
         handle = await bridge.create_session(config)
         self._handle = handle
         self.session = handle._session
         self.session_id = handle.session_id
 
         if model_override:
+            if self.on_progress:
+                self.on_progress(f"Switching model to {model_override}...")
             self.switch_model(model_override)
 
         self.reset_usage()
         self._extract_model_info()
+        if self.on_progress:
+            self.on_progress(f"Session ready ({self.model_name or 'unknown model'})")
 
     async def resume_session(
         self,
@@ -254,6 +302,7 @@ class SessionManager:
         bridge = self._get_bridge()
         config = BridgeConfig(
             working_dir=working_dir or Path.cwd(),
+            bundle_name=self._read_active_bundle(),
             run_preflight=False,
             on_stream=self._on_stream,
         )

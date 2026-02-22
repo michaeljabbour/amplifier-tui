@@ -208,13 +208,24 @@ def check_environment(workspace_pref: str = "") -> EnvironmentStatus:
             from amplifier_foundation import load_bundle  # type: ignore[import-not-found]
 
             import asyncio
+            from concurrent.futures import ThreadPoolExecutor
 
-            loop = asyncio.new_event_loop()
-            try:
-                loop.run_until_complete(load_bundle(active_bundle))
-                status.bundle_loadable = True
-            finally:
-                loop.close()
+            def _load_in_thread() -> None:
+                """Run the async load_bundle in a fresh thread with its own loop."""
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(load_bundle(active_bundle))
+                finally:
+                    loop.close()
+
+            # Always run in a separate thread so we get a clean event loop
+            # regardless of whether the caller is already inside an async
+            # context (e.g. Textual's event loop).
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(_load_in_thread).result(timeout=15)
+
+            status.bundle_loadable = True
         except Exception as exc:
             status.bundle_error = str(exc)
             logger.debug("Bundle load failed for %s", active_bundle, exc_info=True)
